@@ -110,7 +110,7 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 	securityGroups := d.OpenStackMachineClass.Spec.SecurityGroups
 	availabilityZone := d.OpenStackMachineClass.Spec.AvailabilityZone
 	metadata := d.OpenStackMachineClass.Spec.Tags
-	podNetworkCidr := d.OpenStackMachineClass.Spec.PodNetworkCidr
+	podNetworkCidrs := d.OpenStackMachineClass.Spec.PodNetworkCidr
 	rootDiskSize := d.OpenStackMachineClass.Spec.RootDiskSize
 	useConfigDrive := d.OpenStackMachineClass.Spec.UseConfigDrive
 
@@ -236,14 +236,16 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 	for _, port := range allPorts {
 		for id := range podNetworkIds {
 			if port.NetworkID == id {
-				_, err := ports.Update(nwClient, port.ID, ports.UpdateOpts{
-					AllowedAddressPairs: &[]ports.AddressPair{{IPAddress: podNetworkCidr}},
-				}).Extract()
-				if err != nil {
-					metrics.APIFailedRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "neutron"}).Inc()
-					return "", "", d.deleteOnFail(fmt.Errorf("failed to update allowed address pair for port ID %s: %s", port.ID, err))
+				for _, podNetworkCidr := range strings.Split(podNetworkCidrs, ",") {
+					_, err := ports.Update(nwClient, port.ID, ports.UpdateOpts{
+						AllowedAddressPairs: &[]ports.AddressPair{{IPAddress: podNetworkCidr}},
+					}).Extract()
+					if err != nil {
+						metrics.APIFailedRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "neutron"}).Inc()
+						return "", "", d.deleteOnFail(fmt.Errorf("failed to update allowed address pair for port ID %s: %s", port.ID, err))
+					}
+					metrics.APIRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "neutron"}).Inc()
 				}
-				metrics.APIRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "neutron"}).Inc()
 			}
 		}
 	}
