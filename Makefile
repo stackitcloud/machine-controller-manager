@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-IMAGE_REPOSITORY   := eu.gcr.io/gardener-project/gardener/machine-controller-manager
+IMAGE_REPOSITORY   := registry.alpha.ske.eu01.stackit.cloud/gardener-ds/machine-controller-manager
 IMAGE_TAG          := $(shell cat VERSION)
 COVERPROFILE       := test/output/coverprofile.out
 
@@ -74,15 +74,11 @@ release: build build-local docker-image docker-login docker-push rename-binaries
 .PHONY: docker-image
 docker-images:
 	@docker build -t $(IMAGE_REPOSITORY):$(IMAGE_TAG) --rm .
+	@docker push $(IMAGE_REPOSITORY):$(IMAGE_TAG)
 
 .PHONY: docker-login
 docker-login:
 	@gcloud auth activate-service-account --key-file .kube-secrets/gcr/gcr-readwrite.json
-
-.PHONY: docker-push
-docker-push:
-	@if ! docker images $(IMAGE_REPOSITORY) | awk '{ print $$2 }' | grep -q -F $(IMAGE_TAG); then echo "$(IMAGE_REPOSITORY) version $(IMAGE_TAG) is not yet built. Please run 'make docker-images'"; false; fi
-	@gcloud docker -- push $(IMAGE_REPOSITORY):$(IMAGE_TAG)
 
 .PHONY: rename-binaries
 rename-binaries:

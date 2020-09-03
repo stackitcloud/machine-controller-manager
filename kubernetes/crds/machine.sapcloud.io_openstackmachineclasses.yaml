@@ -77,6 +77,8 @@ spec:
               type: string
             networkID:
               type: string
+            networkIDv6:
+              type: string
             networks:
               items:
                 properties:
@@ -121,6 +123,8 @@ spec:
               type: object
             useConfigDrive:
               type: boolean
+            volumeType:
+              type: string
           required:
           - availabilityZone
           - flavorName

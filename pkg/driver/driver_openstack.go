@@ -36,6 +36,7 @@ import (
 
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack"
+	"github.com/gophercloud/gophercloud/openstack/blockstorage/v2/volumes"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/bootfromvolume"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/keypairs"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/schedulerhints"
@@ -109,19 +110,34 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 		return "", "", err
 	}
 
+	cinder, err := d.createCinderClient()
+	if err != nil {
+		return "", "", err
+	}
+
 	flavorName := d.OpenStackMachineClass.Spec.FlavorName
 	keyName := d.OpenStackMachineClass.Spec.KeyName
 	imageName := d.OpenStackMachineClass.Spec.ImageName
 	imageID := d.OpenStackMachineClass.Spec.ImageID
 	networkID := d.OpenStackMachineClass.Spec.NetworkID
+	networkIDv6 := d.OpenStackMachineClass.Spec.NetworkIDv6
 	subnetID := d.OpenStackMachineClass.Spec.SubnetID
 	specNetworks := d.OpenStackMachineClass.Spec.Networks
 	securityGroups := d.OpenStackMachineClass.Spec.SecurityGroups
 	availabilityZone := d.OpenStackMachineClass.Spec.AvailabilityZone
 	metadata := d.OpenStackMachineClass.Spec.Tags
-	podNetworkCidr := d.OpenStackMachineClass.Spec.PodNetworkCidr
+	podNetworkCidrs := d.OpenStackMachineClass.Spec.PodNetworkCidr
 	rootDiskSize := d.OpenStackMachineClass.Spec.RootDiskSize
+	volumeType := d.OpenStackMachineClass.Spec.VolumeType
 	useConfigDrive := d.OpenStackMachineClass.Spec.UseConfigDrive
+	dualHomed := networkID != networkIDv6
+
+	// Set NetworkIDv6 to empty that
+	if networkID == networkIDv6 {
+		networkIDv6 = ""
+	}
+
+	//fmt.Println(d.OpenStackMachineClass)
 
 	var createOpts servers.CreateOptsBuilder
 	var imageRef string
@@ -172,7 +188,7 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 				Name:                d.MachineName,
 				NetworkID:           networkID,
 				FixedIPs:            []ports.IP{{SubnetID: *subnetID}},
-				AllowedAddressPairs: []ports.AddressPair{{IPAddress: podNetworkCidr}},
+				AllowedAddressPairs: []ports.AddressPair{{IPAddress: podNetworkCidrs}},
 				SecurityGroups:      &securityGroupIDs,
 			}).Extract()
 			if err != nil {
@@ -207,6 +223,18 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 		}
 	}
 
+	//if len(networkIDv6) > 0 {
+	//	sn := []servers.Network{{UUID: networkIDv6}}
+	//	for _, network := range serverNetworks {
+	//		sn =
+	//	}
+	//	serverNetworks = sn
+	//}
+
+	if len(networkIDv6) > 0 {
+		serverNetworks = append(serverNetworks, servers.Network{UUID: networkIDv6})
+	}
+
 	metrics.APIRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "nova"}).Inc()
 
 	createOpts = &servers.CreateOpts{
@@ -227,6 +255,10 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 		KeyName:           keyName,
 	}
 
+	var volume volumes.Volume
+
+	// rootDiskSize > 0 means that a bootvolume have to be created
+	// that the vm is booting from
 	if d.OpenStackMachineClass.Spec.ServerGroupID != nil {
 		hints := schedulerhints.SchedulerHints{
 			Group: *d.OpenStackMachineClass.Spec.ServerGroupID,
@@ -238,18 +270,53 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 	}
 
 	if rootDiskSize > 0 {
-		blockDevices, err := resourceInstanceBlockDevicesV2(rootDiskSize, imageRef)
-		if err != nil {
-			return "", "", err
+		var blockDevices []bootfromvolume.BlockDevice
+
+		// volumeType is not defined, so just add the image and size to bootfromvolume.BlockDevice
+		if volumeType == "" {
+			blockDevices, err = resourceInstanceBlockDevicesV2(rootDiskSize, imageRef, nil)
+			if err != nil {
+				return "", "", err
+			}
+		} else {
+			// volumeType is defined, so we have to create the volume beforehand and
+			// add it to bootfromvolume.BlockDevice
+
+			// check if volume already created
+			volume, err = checkBootVolume(d.MachineName, cinder)
+			if err != nil {
+				return "", "", err
+			}
+
+			// if not created before, create now
+			if volume.ID == "" {
+				klog.V(3).Infof("creating boot volume for %s", d.MachineName)
+				volume, err = createBootVolume(cinder, rootDiskSize, volumeType, availabilityZone, imageRef, d.MachineName)
+				if err != nil {
+					volerr := volumes.Delete(cinder, volume.ID, volumes.DeleteOpts{Cascade: true}).ExtractErr()
+					return "", "", fmt.Errorf("error volume creation, %s and deletion %s", err, volerr)
+				}
+			}
+			err = waitForVolumeStatus(cinder, volume.ID, []string{"downloading", "creating"}, []string{"available"}, 600)
+			if err != nil {
+				volerr := volumes.Delete(cinder, volume.ID, volumes.DeleteOpts{Cascade: true}).ExtractErr()
+				return "", "", fmt.Errorf("error waiting for volume, %s and deletion %s", err, volerr)
+			}
+
+			blockDevices, err = resourceInstanceBlockDevicesV2(rootDiskSize, imageRef, &volume.ID)
+			if err != nil {
+				return "", "", d.deleteOnFail(err)
+			}
 		}
 
 		createOpts = &bootfromvolume.CreateOptsExt{
 			CreateOptsBuilder: createOpts,
 			BlockDevice:       blockDevices,
 		}
+
 	}
 
-	klog.V(3).Infof("creating machine")
+	klog.V(3).Infof("creating machine %s", d.MachineName)
 
 	var server *servers.Server
 	// If a custom block_device (root disk size is provided) we need to boot from volume
@@ -261,7 +328,11 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 
 	if err != nil {
 		metrics.APIFailedRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "nova"}).Inc()
-		return "", "", fmt.Errorf("error creating the server: %s", err)
+		var volerr error
+		if volume.ID != "" {
+			volerr = volumes.Delete(cinder, volume.ID, volumes.DeleteOpts{Cascade: true}).ExtractErr()
+		}
+		return "", "", d.deleteOnFail(fmt.Errorf("error creating the server: %s, %s", err, volerr))
 	}
 	metrics.APIRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "nova"}).Inc()
 
@@ -292,18 +363,39 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 		return "", "", d.deleteOnFail(fmt.Errorf("got an empty port list for server ID %s", server.ID))
 	}
 
+	var allowedAddressPairs []ports.AddressPair
+	var allowedAddressPairsV6 []ports.AddressPair
+	if dualHomed {
+		allowedAddressPairs = []ports.AddressPair{{IPAddress: strings.Split(podNetworkCidrs, ",")[0]}}
+		allowedAddressPairsV6 = []ports.AddressPair{{IPAddress: strings.Split(podNetworkCidrs, ",")[1]}}
+	}
+	if !dualHomed {
+		for _, podCidr := range strings.Split(podNetworkCidrs, ",") {
+			allowedAddressPairs = append(allowedAddressPairs, ports.AddressPair{IPAddress: podCidr})
+		}
+	}
+
 	for _, port := range allPorts {
-		for id := range podNetworkIds {
-			if port.NetworkID == id {
-				_, err := ports.Update(nwClient, port.ID, ports.UpdateOpts{
-					AllowedAddressPairs: &[]ports.AddressPair{{IPAddress: podNetworkCidr}},
-				}).Extract()
-				if err != nil {
-					metrics.APIFailedRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "neutron"}).Inc()
-					return "", "", d.deleteOnFail(fmt.Errorf("failed to update allowed address pair for port ID %s: %s", port.ID, err))
-				}
-				metrics.APIRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "neutron"}).Inc()
+		if port.NetworkID == networkID {
+			_, err := ports.Update(nwClient, port.ID, ports.UpdateOpts{
+				AllowedAddressPairs: &allowedAddressPairs,
+			}).Extract()
+			if err != nil {
+				metrics.APIFailedRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "neutron"}).Inc()
+				return "", "", d.deleteOnFail(fmt.Errorf("failed to update allowed address pair for port ID %s: %s", port.ID, err))
 			}
+			metrics.APIRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "neutron"}).Inc()
+		}
+
+		if port.NetworkID == networkIDv6 {
+			_, err := ports.Update(nwClient, port.ID, ports.UpdateOpts{
+				AllowedAddressPairs: &allowedAddressPairsV6,
+			}).Extract()
+			if err != nil {
+				metrics.APIFailedRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "neutron"}).Inc()
+				return "", "", d.deleteOnFail(fmt.Errorf("failed to update allowed address pair for port ID %s: %s", port.ID, err))
+			}
+			metrics.APIRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "neutron"}).Inc()
 		}
 	}
 
@@ -312,6 +404,8 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 
 // Delete method is used to delete an OS machine
 func (d *OpenStackDriver) Delete(machineID string) error {
+	var returnerr error
+
 	res, err := d.GetVMs(machineID)
 	if err != nil {
 		return err
@@ -327,13 +421,13 @@ func (d *OpenStackDriver) Delete(machineID string) error {
 			metrics.APIFailedRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "nova"}).Inc()
 			klog.Errorf("Failed to delete machine with ID: %s", machineID)
 
-			return err
+			returnerr = err
 		}
 
 		// waiting for the machine to be deleted to release consumed quota resources, 5 minutes should be enough
 		err = waitForStatus(client, machineID, nil, []string{"DELETED", "SOFT_DELETED"}, 300)
 		if err != nil {
-			return fmt.Errorf("error waiting for the %q server to be deleted: %s", machineID, err)
+			returnerr = fmt.Errorf("error waiting for the %q server to be deleted: %s", machineID, err)
 		}
 		metrics.APIRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "nova"}).Inc()
 		klog.V(3).Infof("Deleted machine with ID: %s", machineID)
@@ -341,13 +435,39 @@ func (d *OpenStackDriver) Delete(machineID string) error {
 	} else {
 		// No running instance exists with the given machine-ID
 		klog.V(2).Infof("No VM matching the machine-ID found on the provider %q", machineID)
+
+		// Delete bootvolume, if it exists
+		var volume volumes.Volume
+		cinder, err := d.createCinderClient()
+		if err != nil {
+			return err
+		}
+		// Check for volume
+		volume, err = checkBootVolume(d.MachineName, cinder)
+		if err != nil {
+			returnerr = fmt.Errorf("error check for volume, %s", err)
+		}
+
+		if volume.ID != "" {
+			// Wait for volume get available state, if no instance was created
+			err = waitForVolumeStatus(cinder, volume.ID, []string{}, []string{"available"}, 300)
+			if err != nil {
+				return fmt.Errorf("error wait for detached volume for deletion, %s", err)
+			}
+			err = volumes.Delete(cinder, volume.ID, volumes.DeleteOpts{Cascade: true}).ExtractErr()
+			if err != nil {
+				return fmt.Errorf("error volume deletion, %s", err)
+			}
+
+			klog.V(3).Infof("Deleted bootvolume for machine: %s", d.MachineName)
+		}
 	}
 
 	if err = d.deletePort(); err != nil {
-		return err
+		returnerr = err
 	}
 
-	return nil
+	return returnerr
 }
 
 // GetExisting method is used to get machineID for existing OS machine
@@ -569,6 +689,22 @@ func (d *OpenStackDriver) createNeutronClient() (*gophercloud.ServiceClient, err
 	})
 }
 
+// createCinderClient is used to create a Cinder client
+func (d *OpenStackDriver) createCinderClient() (*gophercloud.ServiceClient, error) {
+
+	region := d.OpenStackMachineClass.Spec.Region
+
+	client, err := d.createOpenStackClient()
+	if err != nil {
+		return nil, err
+	}
+
+	return openstack.NewBlockStorageV3(client, gophercloud.EndpointOpts{
+		Region:       strings.TrimSpace(region),
+		Availability: gophercloud.AvailabilityPublic,
+	})
+}
+
 func (d *OpenStackDriver) encodeMachineID(region string, machineID string) string {
 	return fmt.Sprintf("openstack:///%s/%s", region, machineID)
 }
@@ -704,6 +840,34 @@ func waitForStatus(c *gophercloud.ServiceClient, id string, pending []string, ta
 	})
 }
 
+func waitForVolumeStatus(c *gophercloud.ServiceClient, id string, pending []string, target []string, secs int) error {
+	return gophercloud.WaitFor(secs, func() (bool, error) {
+		current, err := volumes.Get(c, id).Extract()
+		if err != nil {
+			if _, ok := err.(gophercloud.ErrDefault404); ok && strSliceContains(target, "deleting") {
+				return true, nil
+			}
+			return false, err
+		}
+
+		if strSliceContains(target, current.Status) {
+			return true, nil
+		}
+
+		// if there is no pending statuses defined or current status is in the pending list, then continue polling
+		if len(pending) == 0 || strSliceContains(pending, current.Status) {
+			return false, nil
+		}
+
+		retErr := fmt.Errorf("unexpected status %q, wanted target %q", current.Status, strings.Join(target, ", "))
+		if current.Status == "ERROR" {
+			retErr = fmt.Errorf("%s", retErr)
+		}
+
+		return false, retErr
+	})
+}
+
 func strSliceContains(haystack []string, needle string) bool {
 	for _, s := range haystack {
 		if s == needle {
@@ -713,16 +877,64 @@ func strSliceContains(haystack []string, needle string) bool {
 	return false
 }
 
-func resourceInstanceBlockDevicesV2(rootDiskSize int, imageID string) ([]bootfromvolume.BlockDevice, error) {
+func resourceInstanceBlockDevicesV2(rootDiskSize int, imageID string, volume *string) ([]bootfromvolume.BlockDevice, error) {
 	blockDeviceOpts := make([]bootfromvolume.BlockDevice, 1)
-	blockDeviceOpts[0] = bootfromvolume.BlockDevice{
-		UUID:                imageID,
-		VolumeSize:          rootDiskSize,
-		BootIndex:           0,
-		DeleteOnTermination: true,
-		SourceType:          "image",
-		DestinationType:     "volume",
+	if volume != nil {
+		blockDeviceOpts[0] = bootfromvolume.BlockDevice{
+			DeleteOnTermination: true,
+			DestinationType:     bootfromvolume.DestinationVolume,
+			SourceType:          bootfromvolume.SourceVolume,
+			UUID:                *volume,
+			BootIndex:           0,
+		}
+
+	} else {
+		blockDeviceOpts[0] = bootfromvolume.BlockDevice{
+			UUID:                imageID,
+			VolumeSize:          rootDiskSize,
+			BootIndex:           0,
+			DeleteOnTermination: true,
+			SourceType:          "image",
+			DestinationType:     "volume",
+		}
+
 	}
 	klog.V(2).Infof("[DEBUG] Block Device Options: %+v", blockDeviceOpts)
 	return blockDeviceOpts, nil
+}
+
+func createBootVolume(cinder *gophercloud.ServiceClient, rootDiskSize int, volumeType string, availabilityZone string, imageRef string, machineName string) (volumes.Volume, error) {
+	createOpts := volumes.CreateOpts{
+		Size:             rootDiskSize,
+		AvailabilityZone: availabilityZone,
+		Name:             machineName,
+		ImageID:          imageRef,
+		VolumeType:       volumeType,
+	}
+
+	volume, err := volumes.Create(cinder, createOpts).Extract()
+	if err != nil {
+		return volumes.Volume{}, err
+	}
+
+	return *volume, nil
+}
+
+func checkBootVolume(name string, client *gophercloud.ServiceClient) (res volumes.Volume, err error) {
+	opts := volumes.ListOpts{Name: name}
+	pager := volumes.List(client, opts)
+
+	err = pager.EachPage(func(page pagination.Page) (bool, error) {
+		volList, err := volumes.ExtractVolumes(page)
+		if err != nil {
+			return false, fmt.Errorf("error extract volume")
+		}
+		for _, p := range volList {
+			if p.Name == name {
+				res = p
+			}
+		}
+		return false, err
+	})
+	return
 }
