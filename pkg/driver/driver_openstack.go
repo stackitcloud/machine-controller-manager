@@ -106,6 +106,7 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 	imageName := d.OpenStackMachineClass.Spec.ImageName
 	imageID := d.OpenStackMachineClass.Spec.ImageID
 	networkID := d.OpenStackMachineClass.Spec.NetworkID
+	networkIDv6 := d.OpenStackMachineClass.Spec.NetworkIDv6
 	specNetworks := d.OpenStackMachineClass.Spec.Networks
 	securityGroups := d.OpenStackMachineClass.Spec.SecurityGroups
 	availabilityZone := d.OpenStackMachineClass.Spec.AvailabilityZone
@@ -156,6 +157,10 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 				podNetworkIds[resolvedNetworkID] = struct{}{}
 			}
 		}
+	}
+
+	if len(networkIDv6) > 0 {
+		serverNetworks = append(serverNetworks, servers.Network{UUID: networkIDv6})
 	}
 
 	metrics.APIRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "nova"}).Inc()
