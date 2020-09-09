@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-IMAGE_REPOSITORY   := einfachnuralex/machine-controller-manager
+IMAGE_REPOSITORY   := registry.alpha.ske.eu01.stackit.cloud/gardener-ds/machine-controller-manager
 IMAGE_TAG          := $(shell cat VERSION)
 COVERPROFILE       := test/output/coverprofile.out
 
@@ -74,14 +74,11 @@ release: build build-local docker-image docker-login docker-push rename-binaries
 .PHONY: docker-image
 docker-images:
 	@docker build -t $(IMAGE_REPOSITORY):$(IMAGE_TAG) --rm .
+	docker push $(IMAGE_REPOSITORY):$(IMAGE_TAG)
 
 .PHONY: docker-login
 docker-login:
 	@gcloud auth activate-service-account --key-file .kube-secrets/gcr/gcr-readwrite.json
-
-.PHONY: docker-push
-docker-push:
-	docker push $(IMAGE_REPOSITORY):$(IMAGE_TAG)
 
 .PHONY: rename-binaries
 rename-binaries:

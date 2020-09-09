@@ -114,6 +114,14 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 	podNetworkCidrs := d.OpenStackMachineClass.Spec.PodNetworkCidr
 	rootDiskSize := d.OpenStackMachineClass.Spec.RootDiskSize
 	useConfigDrive := d.OpenStackMachineClass.Spec.UseConfigDrive
+	dualHomed := networkID != networkIDv6
+
+	// Set NetworkIDv6 to empty that
+	if networkID == networkIDv6 {
+		networkIDv6 = ""
+	}
+
+	fmt.Println(d.OpenStackMachineClass)
 
 	var createOpts servers.CreateOptsBuilder
 	var imageRef string
@@ -238,20 +246,39 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 		return "", "", d.deleteOnFail(fmt.Errorf("got an empty port list for server ID %s", server.ID))
 	}
 
+	var allowedAddressPairs []ports.AddressPair
+	var allowedAddressPairsV6 []ports.AddressPair
+	if dualHomed {
+		allowedAddressPairs = []ports.AddressPair{{IPAddress: strings.Split(podNetworkCidrs, ",")[0]}}
+		allowedAddressPairsV6 = []ports.AddressPair{{IPAddress: strings.Split(podNetworkCidrs, ",")[1]}}
+	}
+	if !dualHomed {
+		for _, podCidr := range strings.Split(podNetworkCidrs, ",") {
+			allowedAddressPairs = append(allowedAddressPairs, ports.AddressPair{IPAddress: podCidr})
+		}
+	}
+
 	for _, port := range allPorts {
-		for id := range podNetworkIds {
-			if port.NetworkID == id {
-				for _, podNetworkCidr := range strings.Split(podNetworkCidrs, ",") {
-					_, err := ports.Update(nwClient, port.ID, ports.UpdateOpts{
-						AllowedAddressPairs: &[]ports.AddressPair{{IPAddress: podNetworkCidr}},
-					}).Extract()
-					if err != nil {
-						metrics.APIFailedRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "neutron"}).Inc()
-						return "", "", d.deleteOnFail(fmt.Errorf("failed to update allowed address pair for port ID %s: %s", port.ID, err))
-					}
-					metrics.APIRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "neutron"}).Inc()
-				}
+		if port.NetworkID == networkID {
+			_, err := ports.Update(nwClient, port.ID, ports.UpdateOpts{
+				AllowedAddressPairs: &allowedAddressPairs,
+			}).Extract()
+			if err != nil {
+				metrics.APIFailedRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "neutron"}).Inc()
+				return "", "", d.deleteOnFail(fmt.Errorf("failed to update allowed address pair for port ID %s: %s", port.ID, err))
 			}
+			metrics.APIRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "neutron"}).Inc()
+		}
+
+		if port.NetworkID == networkIDv6 {
+			_, err := ports.Update(nwClient, port.ID, ports.UpdateOpts{
+				AllowedAddressPairs: &allowedAddressPairsV6,
+			}).Extract()
+			if err != nil {
+				metrics.APIFailedRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "neutron"}).Inc()
+				return "", "", d.deleteOnFail(fmt.Errorf("failed to update allowed address pair for port ID %s: %s", port.ID, err))
+			}
+			metrics.APIRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "neutron"}).Inc()
 		}
 	}
 
