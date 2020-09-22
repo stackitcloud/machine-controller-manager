@@ -167,12 +167,16 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 		}
 	}
 
+	//if len(networkIDv6) > 0 {
+	//	sn := []servers.Network{{UUID: networkIDv6}}
+	//	for _, network := range serverNetworks {
+	//		sn =
+	//	}
+	//	serverNetworks = sn
+	//}
+
 	if len(networkIDv6) > 0 {
-		sn := []servers.Network{{UUID: networkIDv6}}
-		for _, network := range serverNetworks {
-			sn = append(sn, network)
-		}
-		serverNetworks = sn
+		serverNetworks = append(serverNetworks, servers.Network{UUID: networkIDv6})
 	}
 
 	metrics.APIRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "nova"}).Inc()
