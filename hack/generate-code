@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-rm -f $GOPATH/bin/*-gen
+#rm -f $GOPATH/bin/*-gen
 
 CURRENT_DIR=$(dirname $0)
 PROJECT_ROOT="${CURRENT_DIR}"/..
