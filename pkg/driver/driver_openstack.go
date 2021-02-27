@@ -34,6 +34,7 @@ import (
 
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack"
+	"github.com/gophercloud/gophercloud/openstack/blockstorage/v2/volumes"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/bootfromvolume"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/keypairs"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/images"
@@ -97,6 +98,11 @@ func (d *OpenStackDriver) deleteOnFail(err error) error {
 func (d *OpenStackDriver) Create() (string, string, error) {
 
 	client, err := d.createNovaClient()
+	if err != nil {
+		return "", "", err
+	}
+
+	cinder, err := d.createCinderClient()
 	if err != nil {
 		return "", "", err
 	}
@@ -201,15 +207,29 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 	}
 
 	if rootDiskSize > 0 {
-		blockDevices, err := resourceInstanceBlockDevicesV2(rootDiskSize, imageRef, volumeType)
-		if err != nil {
-			return "", "", err
+		var blockDevices []bootfromvolume.BlockDevice
+		if volumeType != "" {
+			blockDevices, err = resourceInstanceBlockDevicesV2(rootDiskSize, imageRef, nil)
+			if err != nil {
+				return "", "", err
+			}
+
+		} else {
+			volume, err := createBootVolume(cinder, rootDiskSize, volumeType, availabilityZone, imageRef, d.MachineName)
+			if err != nil {
+				return "", "", err
+			}
+			blockDevices, err = resourceInstanceBlockDevicesV2(rootDiskSize, imageRef, &volume.ID)
+			if err != nil {
+				return "", "", err
+			}
 		}
 
 		createOpts = &bootfromvolume.CreateOptsExt{
 			CreateOptsBuilder: createOpts,
 			BlockDevice:       blockDevices,
 		}
+
 	}
 
 	klog.V(3).Infof("creating machine")
@@ -547,6 +567,22 @@ func (d *OpenStackDriver) createNeutronClient() (*gophercloud.ServiceClient, err
 	})
 }
 
+// createCinderClient is used to create a Cinder client
+func (d *OpenStackDriver) createCinderClient() (*gophercloud.ServiceClient, error) {
+
+	region := d.OpenStackMachineClass.Spec.Region
+
+	client, err := d.createOpenStackClient()
+	if err != nil {
+		return nil, err
+	}
+
+	return openstack.NewBlockStorageV3(client, gophercloud.EndpointOpts{
+		Region:       strings.TrimSpace(region),
+		Availability: gophercloud.AvailabilityPublic,
+	})
+}
+
 func (d *OpenStackDriver) encodeMachineID(region string, machineID string) string {
 	return fmt.Sprintf("openstack:///%s/%s", region, machineID)
 }
@@ -637,17 +673,45 @@ func strSliceContains(haystack []string, needle string) bool {
 	return false
 }
 
-func resourceInstanceBlockDevicesV2(rootDiskSize int, imageID string, volumeType string) ([]bootfromvolume.BlockDevice, error) {
+func resourceInstanceBlockDevicesV2(rootDiskSize int, imageID string, volume *string) ([]bootfromvolume.BlockDevice, error) {
 	blockDeviceOpts := make([]bootfromvolume.BlockDevice, 1)
-	blockDeviceOpts[0] = bootfromvolume.BlockDevice{
-		UUID:                imageID,
-		VolumeSize:          rootDiskSize,
-		BootIndex:           0,
-		DeleteOnTermination: true,
-		SourceType:          "image",
-		DestinationType:     "volume",
-		VolumeType:          volumeType,
+	if volume != nil {
+		blockDeviceOpts[0] = bootfromvolume.BlockDevice{
+			DeleteOnTermination: true,
+			DestinationType:     bootfromvolume.DestinationVolume,
+			SourceType:          bootfromvolume.SourceVolume,
+			UUID:                *volume,
+			BootIndex:           0,
+		}
+
+	} else {
+		blockDeviceOpts[0] = bootfromvolume.BlockDevice{
+			UUID:                imageID,
+			VolumeSize:          rootDiskSize,
+			BootIndex:           0,
+			DeleteOnTermination: true,
+			SourceType:          "image",
+			DestinationType:     "volume",
+		}
+
 	}
 	klog.V(2).Infof("[DEBUG] Block Device Options: %+v", blockDeviceOpts)
 	return blockDeviceOpts, nil
+}
+
+func createBootVolume(cinder *gophercloud.ServiceClient, rootDiskSize int, volumeType string, availabilityZone string, imageRef string, machineName string) (volumes.Volume, error) {
+	createOpts := volumes.CreateOpts{
+		Size:             rootDiskSize,
+		AvailabilityZone: availabilityZone,
+		Name:             machineName,
+		ImageID:          imageRef,
+		VolumeType:       volumeType,
+	}
+
+	volume, err := volumes.Create(cinder, createOpts).Extract()
+	if err != nil {
+		return volumes.Volume{}, err
+	}
+
+	return *volume, nil
 }
