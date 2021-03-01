@@ -219,7 +219,7 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 			if err != nil {
 				return "", "", err
 			}
-			err = waitForVolumeStatus(cinder, volume.ID, []string{"DOWNLOADING"}, []string{"AVAILABLE"}, 600)
+			err = waitForVolumeStatus(cinder, volume.ID, []string{"downloading", "creating"}, []string{"available"}, 600)
 			if err != nil {
 				return "", "", err
 			}
@@ -672,7 +672,7 @@ func waitForVolumeStatus(c *gophercloud.ServiceClient, id string, pending []stri
 	return gophercloud.WaitFor(secs, func() (bool, error) {
 		current, err := volumes.Get(c, id).Extract()
 		if err != nil {
-			if _, ok := err.(gophercloud.ErrDefault404); ok && strSliceContains(target, "DELETED") {
+			if _, ok := err.(gophercloud.ErrDefault404); ok && strSliceContains(target, "deleting") {
 				return true, nil
 			}
 			return false, err
