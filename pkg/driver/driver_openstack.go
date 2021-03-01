@@ -219,7 +219,7 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 			if err != nil {
 				return "", "", err
 			}
-			err = waitForStatus(client, volume.ID, []string{"DOWNLOADING"}, []string{"AVAILABLE"}, 600)
+			err = waitForVolumeStatus(cinder, volume.ID, []string{"DOWNLOADING"}, []string{"AVAILABLE"}, 600)
 			if err != nil {
 				return "", "", err
 			}
@@ -662,6 +662,34 @@ func waitForStatus(c *gophercloud.ServiceClient, id string, pending []string, ta
 		retErr := fmt.Errorf("unexpected status %q, wanted target %q", current.Status, strings.Join(target, ", "))
 		if current.Status == "ERROR" {
 			retErr = fmt.Errorf("%s, fault: %+v", retErr, current.Fault)
+		}
+
+		return false, retErr
+	})
+}
+
+func waitForVolumeStatus(c *gophercloud.ServiceClient, id string, pending []string, target []string, secs int) error {
+	return gophercloud.WaitFor(secs, func() (bool, error) {
+		current, err := volumes.Get(c, id).Extract()
+		if err != nil {
+			if _, ok := err.(gophercloud.ErrDefault404); ok && strSliceContains(target, "DELETED") {
+				return true, nil
+			}
+			return false, err
+		}
+
+		if strSliceContains(target, current.Status) {
+			return true, nil
+		}
+
+		// if there is no pending statuses defined or current status is in the pending list, then continue polling
+		if len(pending) == 0 || strSliceContains(pending, current.Status) {
+			return false, nil
+		}
+
+		retErr := fmt.Errorf("unexpected status %q, wanted target %q", current.Status, strings.Join(target, ", "))
+		if current.Status == "ERROR" {
+			retErr = fmt.Errorf("%s", retErr)
 		}
 
 		return false, retErr
