@@ -219,6 +219,10 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 			if err != nil {
 				return "", "", err
 			}
+			err = waitForStatus(client, volume.ID, []string{"DOWNLOADING"}, []string{"AVAILABLE"}, 600)
+			if err != nil {
+				return "", "", err
+			}
 			blockDevices, err = resourceInstanceBlockDevicesV2(rootDiskSize, imageRef, &volume.ID)
 			if err != nil {
 				return "", "", err
