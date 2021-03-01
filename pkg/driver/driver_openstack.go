@@ -208,7 +208,7 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 
 	if rootDiskSize > 0 {
 		var blockDevices []bootfromvolume.BlockDevice
-		if volumeType != "" {
+		if volumeType == "" {
 			blockDevices, err = resourceInstanceBlockDevicesV2(rootDiskSize, imageRef, nil)
 			if err != nil {
 				return "", "", err
