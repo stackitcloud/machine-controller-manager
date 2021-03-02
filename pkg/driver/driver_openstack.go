@@ -215,12 +215,15 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 			}
 
 		} else {
+			klog.V(3).Infof("creating boot volume")
 			volume, err := createBootVolume(cinder, rootDiskSize, volumeType, availabilityZone, imageRef, d.MachineName)
 			if err != nil {
 				return "", "", err
 			}
 			err = waitForVolumeStatus(cinder, volume.ID, []string{"downloading", "creating"}, []string{"available"}, 600)
 			if err != nil {
+				delOptsBuilder := volumes.DeleteOpts{Cascade: true}
+				_ = volumes.Delete(cinder, volume.ID, delOptsBuilder)
 				return "", "", err
 			}
 			blockDevices, err = resourceInstanceBlockDevicesV2(rootDiskSize, imageRef, &volume.ID)
