@@ -128,7 +128,7 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 		networkIDv6 = ""
 	}
 
-	fmt.Println(d.OpenStackMachineClass)
+	//fmt.Println(d.OpenStackMachineClass)
 
 	var createOpts servers.CreateOptsBuilder
 	var imageRef string
@@ -215,7 +215,7 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 			}
 
 		} else {
-			klog.V(3).Infof("creating boot volume")
+			klog.V(3).Infof("creating boot volume for", d.MachineName)
 			volume, err := createBootVolume(cinder, rootDiskSize, volumeType, availabilityZone, imageRef, d.MachineName)
 			if err != nil {
 				return "", "", err
@@ -239,7 +239,7 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 
 	}
 
-	klog.V(3).Infof("creating machine")
+	klog.V(3).Infof("creating machine", d.MachineName)
 
 	var server *servers.Server
 	// If a custom block_device (root disk size is provided) we need to boot from volume
@@ -351,6 +351,20 @@ func (d *OpenStackDriver) Delete(machineID string) error {
 		metrics.APIFailedRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "nova"}).Inc()
 		klog.Errorf("Failed to delete machine with ID: %s", machineID)
 	}
+
+	/*
+		cinder, err := d.createCinderClient()
+		if err != nil {
+			return err
+		}
+		opts := volumes.ListOpts{Name: res[machineID]}
+		pager, err := volumes.List(client, opts).AllPages()
+		srvvol, err := volumes.ExtractVolumes(pager)
+		for _, volume := range srvvol {
+			delOptsBuilder := volumes.DeleteOpts{Cascade: true}
+			_ = volumes.Delete(cinder, volume.ID, delOptsBuilder)
+		}
+	*/
 
 	return result.Err
 }
