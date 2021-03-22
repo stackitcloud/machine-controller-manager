@@ -206,6 +206,8 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 		KeyName:           keyName,
 	}
 
+	var volume volumes.Volume
+
 	if rootDiskSize > 0 {
 		var blockDevices []bootfromvolume.BlockDevice
 		if volumeType == "" {
@@ -216,7 +218,7 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 
 		} else {
 			klog.V(3).Infof("creating boot volume for", d.MachineName)
-			volume, err := createBootVolume(cinder, rootDiskSize, volumeType, availabilityZone, imageRef, d.MachineName)
+			volume, err = createBootVolume(cinder, rootDiskSize, volumeType, availabilityZone, imageRef, d.MachineName)
 			if err != nil {
 				return "", "", err
 			}
@@ -259,6 +261,8 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 
 	err = waitForStatus(client, server.ID, []string{"BUILD"}, []string{"ACTIVE"}, 600)
 	if err != nil {
+		delOptsBuilder := volumes.DeleteOpts{Cascade: true}
+		_ = volumes.Delete(cinder, volume.ID, delOptsBuilder)
 		return "", "", d.deleteOnFail(fmt.Errorf("error waiting for the %q server status: %s", server.ID, err))
 	}
 
