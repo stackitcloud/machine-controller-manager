@@ -208,29 +208,43 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 
 	var volume volumes.Volume
 
+	// rootDiskSize > 0 means that a bootvolume have to be created
+	// that the vm is booting from
 	if rootDiskSize > 0 {
 		var blockDevices []bootfromvolume.BlockDevice
+
+		// volumeType is not defined, so just add the image and size to bootfromvolume.BlockDevice
 		if volumeType == "" {
 			blockDevices, err = resourceInstanceBlockDevicesV2(rootDiskSize, imageRef, nil)
 			if err != nil {
 				return "", "", err
 			}
-
 		} else {
-			klog.V(3).Infof("creating boot volume for", d.MachineName)
-			volume, err = createBootVolume(cinder, rootDiskSize, volumeType, availabilityZone, imageRef, d.MachineName)
+			// volumeType is defined, so we have to create the volume beforehand and
+			// add it to bootfromvolume.BlockDevice
+
+			// check if volume already created
+			volume, err = checkBootVolume(d.MachineName, cinder)
 			if err != nil {
 				return "", "", err
+			}
+
+			// if not created before, create now
+			if volume.ID == "" {
+				klog.V(3).Infof("creating boot volume for", d.MachineName)
+				volume, err = createBootVolume(cinder, rootDiskSize, volumeType, availabilityZone, imageRef, d.MachineName)
+				if err != nil {
+					return "", "", d.deleteOnFail(err)
+				}
 			}
 			err = waitForVolumeStatus(cinder, volume.ID, []string{"downloading", "creating"}, []string{"available"}, 600)
 			if err != nil {
-				delOptsBuilder := volumes.DeleteOpts{Cascade: true}
-				_ = volumes.Delete(cinder, volume.ID, delOptsBuilder)
-				return "", "", err
+				return "", "", d.deleteOnFail(err)
 			}
+
 			blockDevices, err = resourceInstanceBlockDevicesV2(rootDiskSize, imageRef, &volume.ID)
 			if err != nil {
-				return "", "", err
+				return "", "", d.deleteOnFail(err)
 			}
 		}
 
@@ -253,9 +267,7 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 
 	if err != nil {
 		metrics.APIFailedRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "nova"}).Inc()
-		delOptsBuilder := volumes.DeleteOpts{Cascade: true}
-		_ = volumes.Delete(cinder, volume.ID, delOptsBuilder)
-		return "", "", fmt.Errorf("error creating the server: %s", err)
+		return "", "", d.deleteOnFail(fmt.Errorf("error creating the server: %s", err))
 	}
 	metrics.APIRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "nova"}).Inc()
 
@@ -263,9 +275,6 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 
 	err = waitForStatus(client, server.ID, []string{"BUILD"}, []string{"ACTIVE"}, 600)
 	if err != nil {
-		klog.V(5).Infof("machine failed, delete volume ", volume.Name)
-		delOptsBuilder := volumes.DeleteOpts{Cascade: true}
-		_ = volumes.Delete(cinder, volume.ID, delOptsBuilder)
 		return "", "", d.deleteOnFail(fmt.Errorf("error waiting for the %q server status: %s", server.ID, err))
 	}
 
@@ -330,50 +339,60 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 
 // Delete method is used to delete an OS machine
 func (d *OpenStackDriver) Delete(machineID string) error {
+	var returnerr error
 	res, err := d.GetVMs(machineID)
 	if err != nil {
 		return err
-	} else if len(res) == 0 {
+	}
+	if len(res) == 0 {
 		// No running instance exists with the given machine-ID
 		klog.V(2).Infof("No VM matching the machine-ID found on the provider %q", machineID)
-		return nil
-	}
-
-	instanceID := d.decodeMachineID(machineID)
-	client, err := d.createNovaClient()
-	if err != nil {
-		return err
-	}
-
-	result := servers.Delete(client, instanceID)
-	if result.Err == nil {
-		// waiting for the machine to be deleted to release consumed quota resources, 5 minutes should be enough
-		err = waitForStatus(client, machineID, nil, []string{"DELETED", "SOFT_DELETED"}, 300)
-		if err != nil {
-			return fmt.Errorf("error waiting for the %q server to be deleted: %s", machineID, err)
-		}
-		metrics.APIRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "nova"}).Inc()
-		klog.V(3).Infof("Deleted machine with ID: %s", machineID)
 	} else {
-		metrics.APIFailedRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "nova"}).Inc()
-		klog.Errorf("Failed to delete machine with ID: %s", machineID)
-	}
-
-	/*
-		cinder, err := d.createCinderClient()
+		instanceID := d.decodeMachineID(machineID)
+		nova, err := d.createNovaClient()
 		if err != nil {
 			return err
 		}
-		opts := volumes.ListOpts{Name: res[machineID]}
-		pager, err := volumes.List(client, opts).AllPages()
-		srvvol, err := volumes.ExtractVolumes(pager)
-		for _, volume := range srvvol {
-			delOptsBuilder := volumes.DeleteOpts{Cascade: true}
-			_ = volumes.Delete(cinder, volume.ID, delOptsBuilder)
-		}
-	*/
 
-	return result.Err
+		result := servers.Delete(nova, instanceID)
+		if result.Err == nil {
+			// waiting for the machine to be deleted to release consumed quota resources, 5 minutes should be enough
+			err = waitForStatus(nova, machineID, nil, []string{"DELETED", "SOFT_DELETED"}, 300)
+			if err != nil {
+				returnerr = fmt.Errorf("error waiting for the %q server to be deleted: %s", machineID, err)
+			}
+			metrics.APIRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "nova"}).Inc()
+			klog.V(3).Infof("Deleted machine with ID: %s", machineID)
+		} else {
+			metrics.APIFailedRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "nova"}).Inc()
+			klog.Errorf("Failed to delete machine with ID: %s", machineID)
+		}
+	}
+
+	// Delete bootvolume, if it exists
+	var volume volumes.Volume
+	cinder, err := d.createCinderClient()
+	if err != nil {
+		return err
+	}
+	volume, err = checkBootVolume(d.MachineName, cinder)
+	if err != nil {
+		returnerr = err
+	}
+
+	if volume.ID != "" {
+		delOptsBuilder := volumes.DeleteOpts{Cascade: true}
+		volerr := volumes.Delete(cinder, volume.ID, delOptsBuilder).ExtractErr()
+		if volerr != nil {
+			if returnerr != nil {
+				return fmt.Errorf("Multiple errors while deleting machine, %s, %s", returnerr.Error(), volerr.Error())
+			}
+			return volerr
+		}
+		klog.V(3).Infof("Deleted bootvolume for machine: %s", d.MachineName)
+	}
+
+	return returnerr
 }
 
 // GetExisting method is used to get machineID for existing OS machine
@@ -751,7 +770,7 @@ func resourceInstanceBlockDevicesV2(rootDiskSize int, imageID string, volume *st
 		}
 
 	}
-	klog.V(2).Infof("[DEBUG] Block Device Options: %+v", blockDeviceOpts)
+	// klog.V(2).Infof("[DEBUG] Block Device Options: %+v", blockDeviceOpts)
 	return blockDeviceOpts, nil
 }
 
@@ -770,4 +789,24 @@ func createBootVolume(cinder *gophercloud.ServiceClient, rootDiskSize int, volum
 	}
 
 	return *volume, nil
+}
+
+func checkBootVolume(name string, client *gophercloud.ServiceClient) (res volumes.Volume, err error) {
+	fmt.Println(client.Type)
+	opts := volumes.ListOpts{Name: name}
+	pager := volumes.List(client, opts)
+
+	err = pager.EachPage(func(page pagination.Page) (bool, error) {
+		volList, err := volumes.ExtractVolumes(page)
+		if err != nil {
+			return false, fmt.Errorf("error extract volume")
+		}
+		for _, p := range volList {
+			if p.Name == name {
+				res = p
+			}
+		}
+		return false, err
+	})
+	return
 }
