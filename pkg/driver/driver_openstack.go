@@ -261,6 +261,7 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 
 	err = waitForStatus(client, server.ID, []string{"BUILD"}, []string{"ACTIVE"}, 600)
 	if err != nil {
+		klog.V(5).Infof("machine failed, delete volume ", volume.Name)
 		delOptsBuilder := volumes.DeleteOpts{Cascade: true}
 		_ = volumes.Delete(cinder, volume.ID, delOptsBuilder)
 		return "", "", d.deleteOnFail(fmt.Errorf("error waiting for the %q server status: %s", server.ID, err))
