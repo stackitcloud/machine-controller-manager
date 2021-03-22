@@ -253,6 +253,8 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 
 	if err != nil {
 		metrics.APIFailedRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "nova"}).Inc()
+		delOptsBuilder := volumes.DeleteOpts{Cascade: true}
+		_ = volumes.Delete(cinder, volume.ID, delOptsBuilder)
 		return "", "", fmt.Errorf("error creating the server: %s", err)
 	}
 	metrics.APIRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "nova"}).Inc()
