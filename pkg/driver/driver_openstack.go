@@ -347,6 +347,33 @@ func (d *OpenStackDriver) Delete(machineID string) error {
 	if len(res) == 0 {
 		// No running instance exists with the given machine-ID
 		klog.V(2).Infof("No VM matching the machine-ID found on the provider %q", machineID)
+
+		// Delete bootvolume, if it exists
+		var volume volumes.Volume
+		cinder, err := d.createCinderClient()
+		if err != nil {
+			return err
+		}
+		// Check for volume
+		volume, err = checkBootVolume(d.MachineName, cinder)
+		if err != nil {
+			returnerr = err
+		}
+		// Wait for volume get available state, if no instance was created
+		err = waitForVolumeStatus(cinder, volume.ID, []string{}, []string{"available"}, 300)
+		if err != nil {
+			return fmt.Errorf("error wait for detached volume for deletion, %s", err)
+		}
+
+		if volume.ID != "" {
+			delOptsBuilder := volumes.DeleteOpts{Cascade: true}
+			volerr := volumes.Delete(cinder, volume.ID, delOptsBuilder).ExtractErr()
+			if volerr != nil {
+				return fmt.Errorf("error deleting volume, %s", volerr)
+			}
+
+			klog.V(3).Infof("Deleted bootvolume for machine: %s", d.MachineName)
+		}
 	} else {
 		instanceID := d.decodeMachineID(machineID)
 		nova, err := d.createNovaClient()
@@ -367,41 +394,6 @@ func (d *OpenStackDriver) Delete(machineID string) error {
 			metrics.APIFailedRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "nova"}).Inc()
 			klog.Errorf("Failed to delete machine with ID: %s", machineID)
 		}
-	}
-
-	// Delete bootvolume, if it exists
-	var volume volumes.Volume
-	cinder, err := d.createCinderClient()
-	if err != nil {
-		return err
-	}
-	// Check for volume
-	volume, err = checkBootVolume(d.MachineName, cinder)
-	if err != nil {
-		returnerr = err
-	}
-	// Wait for volume to get detached and deleted, if bound to a instance
-	// or wait to get available, if no instance was created
-	err = waitForVolumeStatus(cinder, volume.ID, []string{"in-use", "attached", "detaching"}, []string{"available", "deleting"}, 600)
-	if err != nil {
-		return fmt.Errorf("error wait for detached volume for deletion, %s", err)
-	}
-	// check again for volume, maybe its deleted now
-	volume, err = checkBootVolume(d.MachineName, cinder)
-	if err != nil {
-		returnerr = err
-	}
-
-	if volume.ID != "" {
-		delOptsBuilder := volumes.DeleteOpts{Cascade: true}
-		volerr := volumes.Delete(cinder, volume.ID, delOptsBuilder).ExtractErr()
-		if volerr != nil {
-			if returnerr != nil {
-				return fmt.Errorf("multiple errors while deleting machine/volume, %s, %s", returnerr.Error(), volerr.Error())
-			}
-			return fmt.Errorf("error deleting volume, %s", volerr)
-		}
-		klog.V(3).Infof("Deleted bootvolume for machine: %s", d.MachineName)
 	}
 
 	return returnerr
