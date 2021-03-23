@@ -359,13 +359,13 @@ func (d *OpenStackDriver) Delete(machineID string) error {
 		if err != nil {
 			returnerr = err
 		}
-		// Wait for volume get available state, if no instance was created
-		err = waitForVolumeStatus(cinder, volume.ID, []string{}, []string{"available"}, 300)
-		if err != nil {
-			return fmt.Errorf("error wait for detached volume for deletion, %s", err)
-		}
 
 		if volume.ID != "" {
+			// Wait for volume get available state, if no instance was created
+			err = waitForVolumeStatus(cinder, volume.ID, []string{}, []string{"available"}, 300)
+			if err != nil {
+				return fmt.Errorf("error wait for detached volume for deletion, %s", err)
+			}
 			delOptsBuilder := volumes.DeleteOpts{Cascade: true}
 			volerr := volumes.Delete(cinder, volume.ID, delOptsBuilder).ExtractErr()
 			if volerr != nil {
