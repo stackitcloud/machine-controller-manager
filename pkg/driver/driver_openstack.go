@@ -231,7 +231,7 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 
 			// if not created before, create now
 			if volume.ID == "" {
-				klog.V(3).Infof("creating boot volume for", d.MachineName)
+				klog.V(3).Infof("creating boot volume for %s", d.MachineName)
 				volume, err = createBootVolume(cinder, rootDiskSize, volumeType, availabilityZone, imageRef, d.MachineName)
 				if err != nil {
 					return "", "", d.deleteOnFail(err)
@@ -255,7 +255,7 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 
 	}
 
-	klog.V(3).Infof("creating machine", d.MachineName)
+	klog.V(3).Infof("creating machine %s", d.MachineName)
 
 	var server *servers.Server
 	// If a custom block_device (root disk size is provided) we need to boot from volume
@@ -381,13 +381,17 @@ func (d *OpenStackDriver) Delete(machineID string) error {
 	}
 
 	if volume.ID != "" {
+		err = waitForVolumeStatus(cinder, volume.ID, []string{"in-use", "attached", "detaching"}, []string{"available"}, 600)
+		if err != nil {
+			return fmt.Errorf("error wait for detached volume for deletion, %s", err)
+		}
 		delOptsBuilder := volumes.DeleteOpts{Cascade: true}
 		volerr := volumes.Delete(cinder, volume.ID, delOptsBuilder).ExtractErr()
 		if volerr != nil {
 			if returnerr != nil {
-				return fmt.Errorf("Multiple errors while deleting machine, %s, %s", returnerr.Error(), volerr.Error())
+				return fmt.Errorf("multiple errors while deleting machine/volume, %s, %s", returnerr.Error(), volerr.Error())
 			}
-			return volerr
+			return fmt.Errorf("error deleting volume, %s", volerr)
 		}
 		klog.V(3).Infof("Deleted bootvolume for machine: %s", d.MachineName)
 	}
@@ -792,7 +796,6 @@ func createBootVolume(cinder *gophercloud.ServiceClient, rootDiskSize int, volum
 }
 
 func checkBootVolume(name string, client *gophercloud.ServiceClient) (res volumes.Volume, err error) {
-	fmt.Println(client.Type)
 	opts := volumes.ListOpts{Name: name}
 	pager := volumes.List(client, opts)
 
