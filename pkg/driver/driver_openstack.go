@@ -234,12 +234,14 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 				klog.V(3).Infof("creating boot volume for %s", d.MachineName)
 				volume, err = createBootVolume(cinder, rootDiskSize, volumeType, availabilityZone, imageRef, d.MachineName)
 				if err != nil {
-					return "", "", d.deleteOnFail(err)
+					volerr := volumes.Delete(cinder, volume.ID, volumes.DeleteOpts{Cascade: true}).ExtractErr()
+					return "", "", fmt.Errorf("error volume creation, %s and deletion %s", err, volerr)
 				}
 			}
 			err = waitForVolumeStatus(cinder, volume.ID, []string{"downloading", "creating"}, []string{"available"}, 600)
 			if err != nil {
-				return "", "", d.deleteOnFail(err)
+				volerr := volumes.Delete(cinder, volume.ID, volumes.DeleteOpts{Cascade: true}).ExtractErr()
+				return "", "", fmt.Errorf("error waiting for volume, %s and deletion %s", err, volerr)
 			}
 
 			blockDevices, err = resourceInstanceBlockDevicesV2(rootDiskSize, imageRef, &volume.ID)
@@ -267,7 +269,8 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 
 	if err != nil {
 		metrics.APIFailedRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "nova"}).Inc()
-		return "", "", d.deleteOnFail(fmt.Errorf("error creating the server: %s", err))
+		volerr := volumes.Delete(cinder, volume.ID, volumes.DeleteOpts{Cascade: true}).ExtractErr()
+		return "", "", d.deleteOnFail(fmt.Errorf("error creating the server: %s, %s", err, volerr))
 	}
 	metrics.APIRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "nova"}).Inc()
 
@@ -340,6 +343,7 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 // Delete method is used to delete an OS machine
 func (d *OpenStackDriver) Delete(machineID string) error {
 	var returnerr error
+
 	res, err := d.GetVMs(machineID)
 	if err != nil {
 		return err
@@ -357,7 +361,7 @@ func (d *OpenStackDriver) Delete(machineID string) error {
 		// Check for volume
 		volume, err = checkBootVolume(d.MachineName, cinder)
 		if err != nil {
-			returnerr = err
+			returnerr = fmt.Errorf("error check for volume, %s", err)
 		}
 
 		if volume.ID != "" {
@@ -366,14 +370,14 @@ func (d *OpenStackDriver) Delete(machineID string) error {
 			if err != nil {
 				return fmt.Errorf("error wait for detached volume for deletion, %s", err)
 			}
-			delOptsBuilder := volumes.DeleteOpts{Cascade: true}
-			volerr := volumes.Delete(cinder, volume.ID, delOptsBuilder).ExtractErr()
-			if volerr != nil {
-				return fmt.Errorf("error deleting volume, %s", volerr)
+			err = volumes.Delete(cinder, volume.ID, volumes.DeleteOpts{Cascade: true}).ExtractErr()
+			if err != nil {
+				return fmt.Errorf("error volume deletion, %s", err)
 			}
 
 			klog.V(3).Infof("Deleted bootvolume for machine: %s", d.MachineName)
 		}
+
 	} else {
 		instanceID := d.decodeMachineID(machineID)
 		nova, err := d.createNovaClient()
