@@ -659,6 +659,7 @@ type OpenStackMachineClassSpec struct {
 	SecretRef        *corev1.SecretReference
 	PodNetworkCidr   string
 	RootDiskSize     int // in GB
+	VolumeType       string
 	UseConfigDrive   *bool
 }
 
