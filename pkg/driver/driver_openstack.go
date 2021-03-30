@@ -269,7 +269,10 @@ func (d *OpenStackDriver) Create() (string, string, error) {
 
 	if err != nil {
 		metrics.APIFailedRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "nova"}).Inc()
-		volerr := volumes.Delete(cinder, volume.ID, volumes.DeleteOpts{Cascade: true}).ExtractErr()
+		var volerr error
+		if volume.ID != "" {
+			volerr = volumes.Delete(cinder, volume.ID, volumes.DeleteOpts{Cascade: true}).ExtractErr()
+		}
 		return "", "", d.deleteOnFail(fmt.Errorf("error creating the server: %s, %s", err, volerr))
 	}
 	metrics.APIRequestCount.With(prometheus.Labels{"provider": "openstack", "service": "nova"}).Inc()
@@ -778,7 +781,7 @@ func resourceInstanceBlockDevicesV2(rootDiskSize int, imageID string, volume *st
 		}
 
 	}
-	// klog.V(2).Infof("[DEBUG] Block Device Options: %+v", blockDeviceOpts)
+	klog.V(2).Infof("[DEBUG] Block Device Options: %+v", blockDeviceOpts)
 	return blockDeviceOpts, nil
 }
 
