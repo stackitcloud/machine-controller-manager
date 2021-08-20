@@ -14,7 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package validation is used to validate all the machine CRD objects
 package driver
 
 import (
@@ -29,12 +28,12 @@ import (
 
 var _ = Describe("Driver AWS", func() {
 
-	Context("GenerateTags Driver AWS Spec", func() {
+	Context("#generateTags", func() {
 
 		It("should convert multiples tags successfully", func() {
 			awsDriver := &AWSDriver{
 				AWSMachineClass: &v1alpha1.AWSMachineClass{},
-				CloudConfig:     &corev1.Secret{},
+				CredentialsData: map[string][]byte{},
 				UserData:        "dXNlciBkYXRhCg==",
 				MachineID:       "ami-99fn8a892f94e765a",
 				MachineName:     "machine-name",
@@ -93,7 +92,7 @@ var _ = Describe("Driver AWS", func() {
 		})
 	})
 
-	Context("GenerateBlockDevices Driver AWS Spec", func() {
+	Context("#generateBlockDevices", func() {
 
 		It("should convert multiples blockDevices successfully", func() {
 			awsDriver := &AWSDriver{}
@@ -220,6 +219,74 @@ var _ = Describe("Driver AWS", func() {
 			Expect(disksGenerated).To(Equal(expectedDisks))
 			Expect(err).ToNot(HaveOccurred())
 		})
+	})
 
+	Context("#GetVolNames", func() {
+		var hostPathPVSpec = corev1.PersistentVolumeSpec{
+			PersistentVolumeSource: corev1.PersistentVolumeSource{
+				HostPath: &corev1.HostPathVolumeSource{
+					Path: "/mnt/data",
+				},
+			},
+		}
+
+		It("should handle in-tree PV (with .spec.awsElasticBlockStore)", func() {
+			driver := &AWSDriver{}
+			pvs := []corev1.PersistentVolumeSpec{
+				{
+					PersistentVolumeSource: corev1.PersistentVolumeSource{
+						AWSElasticBlockStore: &corev1.AWSElasticBlockStoreVolumeSource{
+							VolumeID: "aws://eu-west-1a/vol-1234",
+						},
+					},
+				},
+				{
+					PersistentVolumeSource: corev1.PersistentVolumeSource{
+						AWSElasticBlockStore: &corev1.AWSElasticBlockStoreVolumeSource{
+							VolumeID: "aws:///vol-2345",
+						},
+					},
+				},
+				{
+					PersistentVolumeSource: corev1.PersistentVolumeSource{
+						AWSElasticBlockStore: &corev1.AWSElasticBlockStoreVolumeSource{
+							VolumeID: "vol-3456",
+						},
+					},
+				},
+				hostPathPVSpec,
+			}
+
+			actual, err := driver.GetVolNames(pvs)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(actual).To(Equal([]string{"vol-1234", "vol-2345", "vol-3456"}))
+		})
+
+		It("should handle out-of-tree PV (with .spec.csi.volumeHandle)", func() {
+			driver := &AWSDriver{}
+			pvs := []corev1.PersistentVolumeSpec{
+				{
+					PersistentVolumeSource: corev1.PersistentVolumeSource{
+						CSI: &corev1.CSIPersistentVolumeSource{
+							Driver:       "io.kubernetes.storage.mock",
+							VolumeHandle: "vol-2345",
+						},
+					},
+				},
+				{
+					PersistentVolumeSource: corev1.PersistentVolumeSource{
+						CSI: &corev1.CSIPersistentVolumeSource{
+							Driver:       "ebs.csi.aws.com",
+							VolumeHandle: "vol-1234",
+						},
+					},
+				},
+				hostPathPVSpec,
+			}
+
+			actual, err := driver.GetVolNames(pvs)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(actual).To(Equal([]string{"vol-1234"}))
+		})
 	})
 })

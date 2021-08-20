@@ -10,6 +10,7 @@ spec:
   keyName: <keypair_name> # Name of the ssh key pair
   imageName: <image_name> # Machine image name
   imageID: <image_name> # Machine image id (either name or id needs to be present)
+  serverGroupID: <server_group_id> # Server group ID where the machine should be scheduled
   networkID: <network_id> # Network ID where the machine should be placed
   securityGroups:
   - <security_group_name> # List of security groups which should be used for this machine
@@ -27,3 +28,6 @@ spec:
   secretRef: # Secret pointing to a secret which contains the provider secret and cloudconfig
     namespace: default  # Namespace
     name: test-secret # Name of the secret
+# credentialsSecretRef: # Optional - Kubernetes secret containing only provider secrets (in this case the Secret in the secretRef does not need them)
+#   name: "test-secret-credentials" # Name of the secret
+#   namespace: "default" # Namespace of secret

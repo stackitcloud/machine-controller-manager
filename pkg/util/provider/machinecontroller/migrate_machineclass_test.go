@@ -16,6 +16,8 @@ limitations under the License.
 package controller
 
 import (
+	"fmt"
+
 	"github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1"
 	customfake "github.com/gardener/machine-controller-manager/pkg/fakeclient"
 	"github.com/gardener/machine-controller-manager/pkg/util/provider/driver"
@@ -125,7 +127,7 @@ var _ = Describe("machine", func() {
 			gcpMachineClass *v1alpha1.GCPMachineClass
 			machineClass    *v1alpha1.MachineClass
 
-			retry machineutils.Retry
+			retry machineutils.RetryPeriod
 		}
 		type data struct {
 			setup  setup
@@ -155,15 +157,24 @@ var _ = Describe("machine", func() {
 					machineObjects = append(machineObjects, o)
 				}
 
-				fakedriver := driver.NewFakeDriver(data.action.fakeDriver)
+				fakedriver := driver.NewFakeDriver(
+					data.action.fakeDriver.VMExists,
+					data.action.fakeDriver.ProviderID,
+					data.action.fakeDriver.NodeName,
+					data.action.fakeDriver.LastKnownState,
+					data.action.fakeDriver.Err,
+					nil,
+				)
 
 				controller, trackers := createController(stop, TestNamespace, machineObjects, nil, nil, fakedriver)
 				defer trackers.Stop()
 				waitForCacheSync(stop, controller)
 
 				action := data.action
-				_, err := controller.controlMachineClient.GCPMachineClasses(TestNamespace).Get(action.classSpec.Name, metav1.GetOptions{})
-				Expect(err).ToNot(HaveOccurred())
+				if data.setup.gcpMachineClass != nil {
+					_, err := controller.controlMachineClient.GCPMachineClasses(TestNamespace).Get(action.classSpec.Name, metav1.GetOptions{})
+					Expect(err).ToNot(HaveOccurred())
+				}
 
 				_, _, retry, err := controller.TryMachineClassMigration(data.action.classSpec)
 				Expect(retry).To(Equal(data.expect.retry))
@@ -171,13 +182,15 @@ var _ = Describe("machine", func() {
 
 				if data.expect.err != nil || err != nil {
 					Expect(err).To(HaveOccurred())
-					Expect(err).To(Equal(data.expect.err))
+					Expect(err.Error()).To(Equal(data.expect.err.Error()))
 				} else {
 					Expect(err).ToNot(HaveOccurred())
 
-					actualGCPMachineClass, err := controller.controlMachineClient.GCPMachineClasses(TestNamespace).Get(action.classSpec.Name, metav1.GetOptions{})
-					Expect(err).ToNot(HaveOccurred())
-					Expect(data.expect.gcpMachineClass).To(Equal(actualGCPMachineClass))
+					if data.expect.gcpMachineClass != nil {
+						actualGCPMachineClass, err := controller.controlMachineClient.GCPMachineClasses(TestNamespace).Get(action.classSpec.Name, metav1.GetOptions{})
+						Expect(err).ToNot(HaveOccurred())
+						Expect(data.expect.gcpMachineClass).To(Equal(actualGCPMachineClass))
+					}
 
 					actualMachineClass, err := controller.controlMachineClient.MachineClasses(TestNamespace).Get(action.classSpec.Name, metav1.GetOptions{})
 					Expect(err).ToNot(HaveOccurred())
@@ -245,7 +258,7 @@ var _ = Describe("machine", func() {
 						Spec:     v1alpha1.GCPMachineClassSpec{},
 					},
 					err:   nil,
-					retry: true,
+					retry: machineutils.ShortRetry,
 				},
 			}),
 			Entry("MachineClass migration successful for GCP machine class by updating existing machine class", &data{
@@ -308,7 +321,91 @@ var _ = Describe("machine", func() {
 						Spec:     v1alpha1.GCPMachineClassSpec{},
 					},
 					err:   nil,
-					retry: true,
+					retry: machineutils.ShortRetry,
+				},
+			}),
+			Entry("MachineClass migration succeeds by only updating existing machine class references as machineClass with same name was found", &data{
+				setup: setup{
+					machineClass: []*v1alpha1.MachineClass{
+						{
+							TypeMeta: metav1.TypeMeta{},
+							ObjectMeta: metav1.ObjectMeta{
+								Name:      TestMachineClassName,
+								Namespace: TestNamespace,
+							},
+							ProviderSpec: runtime.RawExtension{},
+							SecretRef:    nil,
+							Provider:     "FakeProvider",
+						},
+					},
+				},
+				action: action{
+					classSpec: &v1alpha1.ClassSpec{
+						Kind: GCPMachineClassKind,
+						Name: TestMachineClassName,
+					},
+					fakeDriver: &driver.FakeDriver{
+						VMExists:   false,
+						ProviderID: "fakeID-0",
+						NodeName:   "fakeNode-0",
+						Err:        nil,
+					},
+				},
+				expect: expect{
+					machineClass: &v1alpha1.MachineClass{
+						TypeMeta: metav1.TypeMeta{},
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      TestMachineClassName,
+							Namespace: TestNamespace,
+						},
+						ProviderSpec: runtime.RawExtension{},
+						SecretRef:    nil,
+						Provider:     "FakeProvider",
+					},
+					err:   nil,
+					retry: machineutils.ShortRetry,
+				},
+			}),
+			Entry("MachineClass migration fails as existing machine class references as machineClass with same name was not found", &data{
+				setup: setup{
+					machineClass: []*v1alpha1.MachineClass{
+						{
+							TypeMeta: metav1.TypeMeta{},
+							ObjectMeta: metav1.ObjectMeta{
+								Name:      TestMachineClassName + "-error",
+								Namespace: TestNamespace,
+							},
+							ProviderSpec: runtime.RawExtension{},
+							SecretRef:    nil,
+							Provider:     "FakeProvider",
+						},
+					},
+				},
+				action: action{
+					classSpec: &v1alpha1.ClassSpec{
+						Kind: GCPMachineClassKind,
+						Name: TestMachineClassName,
+					},
+					fakeDriver: &driver.FakeDriver{
+						VMExists:   false,
+						ProviderID: "fakeID-0",
+						NodeName:   "fakeNode-0",
+						Err:        nil,
+					},
+				},
+				expect: expect{
+					machineClass: &v1alpha1.MachineClass{
+						TypeMeta: metav1.TypeMeta{},
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      TestMachineClassName,
+							Namespace: TestNamespace,
+						},
+						ProviderSpec: runtime.RawExtension{},
+						SecretRef:    nil,
+						Provider:     "FakeProvider",
+					},
+					err:   fmt.Errorf("gcpmachineclasses.machine.sapcloud.io \"test-mc\" not found"),
+					retry: machineutils.ShortRetry,
 				},
 			}),
 		)

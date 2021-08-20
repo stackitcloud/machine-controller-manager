@@ -75,7 +75,12 @@ var _ = Describe("machineclass", func() {
 				}
 
 				fakeDriver := driver.NewFakeDriver(
-					data.action.fakeDriver,
+					data.action.fakeDriver.VMExists,
+					data.action.fakeDriver.ProviderID,
+					data.action.fakeDriver.NodeName,
+					data.action.fakeDriver.LastKnownState,
+					data.action.fakeDriver.Err,
+					nil,
 				)
 
 				controller, trackers := createController(stop, TestNamespace, machineObjects, nil, nil, fakeDriver)
@@ -362,6 +367,9 @@ var _ = Describe("machineclass", func() {
 								ObjectMeta: metav1.ObjectMeta{
 									Name:      TestMachineClassName,
 									Namespace: TestNamespace,
+									DeletionTimestamp: &metav1.Time{
+										Time: time.Time{},
+									},
 								},
 								ProviderSpec: runtime.RawExtension{},
 								SecretRef:    &v1.SecretReference{},
@@ -399,6 +407,9 @@ var _ = Describe("machineclass", func() {
 							ObjectMeta: metav1.ObjectMeta{
 								Name:      TestMachineClassName,
 								Namespace: TestNamespace,
+								DeletionTimestamp: &metav1.Time{
+									Time: time.Time{},
+								},
 							},
 							ProviderSpec: runtime.RawExtension{},
 							SecretRef:    &v1.SecretReference{},

@@ -97,9 +97,9 @@ Make sure `$TARGET_KUBECONFIG` points to the cluster where you wish to manage ma
         ```
     - Deploy the required CRDs from the machine-controller-manager repo,
         ```bash
-        kubectl apply -f kubernetes/crds.yaml
+        kubectl apply -f kubernetes/crds
         ```
-    - Run the machine-controller-manager in the `cmi-client` branch
+    - Run the machine-controller-manager in the `master` branch
         ```bash
         make start
         ```

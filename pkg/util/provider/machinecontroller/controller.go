@@ -35,9 +35,11 @@ import (
 	runtimeutil "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	coreinformers "k8s.io/client-go/informers/core/v1"
+	policyinformers "k8s.io/client-go/informers/policy/v1beta1"
 	"k8s.io/client-go/kubernetes"
 	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	corelisters "k8s.io/client-go/listers/core/v1"
+	policylisters "k8s.io/client-go/listers/policy/v1beta1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
@@ -57,7 +59,7 @@ const (
 	// MCFinalizerName is the finalizer created for the external
 	// machine controller to differentiate it from the MCMFinalizerName
 	// This finalizer is added only on secret-objects to avoid race between in-tree and out-of-tree controllers.
-	// This is a stopgap solution to resolve: https://github.com/gardener/machine-controller-manager/issues/486. 
+	// This is a stopgap solution to resolve: https://github.com/gardener/machine-controller-manager/issues/486.
 	MCFinalizerName = "machine.sapcloud.io/machine-controller"
 )
 
@@ -72,6 +74,7 @@ func NewController(
 	pvInformer coreinformers.PersistentVolumeInformer,
 	secretInformer coreinformers.SecretInformer,
 	nodeInformer coreinformers.NodeInformer,
+	pdbInformer policyinformers.PodDisruptionBudgetInformer,
 	machineClassInformer machineinformers.MachineClassInformer,
 	machineInformer machineinformers.MachineInformer,
 	recorder record.EventRecorder,
@@ -80,20 +83,21 @@ func NewController(
 	bootstrapTokenAuthExtraGroups string,
 ) (Controller, error) {
 	controller := &controller{
-		namespace:                   namespace,
-		controlMachineClient:        controlMachineClient,
-		controlCoreClient:           controlCoreClient,
-		targetCoreClient:            targetCoreClient,
-		recorder:                    recorder,
-		secretQueue:                 workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "secret"),
-		nodeQueue:                   workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "node"),
-		machineClassQueue:           workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "machineclass"),
-		machineQueue:                workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "machine"),
-		machineSafetyOrphanVMsQueue: workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "machinesafetyorphanvms"),
-		machineSafetyAPIServerQueue: workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "machinesafetyapiserver"),
-		safetyOptions:               safetyOptions,
-		nodeConditions:              nodeConditions,
-		driver:                      driver,
+		namespace:                     namespace,
+		controlMachineClient:          controlMachineClient,
+		controlCoreClient:             controlCoreClient,
+		targetCoreClient:              targetCoreClient,
+		recorder:                      recorder,
+		secretQueue:                   workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "secret"),
+		nodeQueue:                     workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "node"),
+		machineClassQueue:             workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "machineclass"),
+		machineQueue:                  workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "machine"),
+		machineSafetyOrphanVMsQueue:   workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "machinesafetyorphanvms"),
+		machineSafetyAPIServerQueue:   workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "machinesafetyapiserver"),
+		safetyOptions:                 safetyOptions,
+		nodeConditions:                nodeConditions,
+		driver:                        driver,
+		bootstrapTokenAuthExtraGroups: bootstrapTokenAuthExtraGroups,
 	}
 
 	controller.internalExternalScheme = runtime.NewScheme()
@@ -114,12 +118,14 @@ func NewController(
 	controller.pvcLister = pvcInformer.Lister()
 	controller.pvLister = pvInformer.Lister()
 	controller.secretLister = secretInformer.Lister()
+	controller.pdbLister = pdbInformer.Lister()
 	controller.machineClassLister = machineClassInformer.Lister()
 	controller.nodeLister = nodeInformer.Lister()
 	controller.machineLister = machineInformer.Lister()
 
 	// Controller syncs
 	controller.secretSynced = secretInformer.Informer().HasSynced
+	controller.pdbSynced = pdbInformer.Informer().HasSynced
 	controller.machineClassSynced = machineClassInformer.Informer().HasSynced
 	controller.nodeSynced = nodeInformer.Informer().HasSynced
 	controller.machineSynced = machineInformer.Informer().HasSynced
@@ -136,13 +142,17 @@ func NewController(
 		DeleteFunc: controller.machineClassToSecretDelete,
 	})
 
+	// Machine Class Controller Informers
 	machineInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    controller.machineToMachineClassAdd,
+		UpdateFunc: controller.machineToMachineClassUpdate,
 		DeleteFunc: controller.machineToMachineClassDelete,
 	})
 
 	machineClassInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    controller.machineClassAdd,
 		UpdateFunc: controller.machineClassUpdate,
+		DeleteFunc: controller.machineClassDelete,
 	})
 
 	// Machine Controller Informers
@@ -202,6 +212,7 @@ type controller struct {
 	pvLister           corelisters.PersistentVolumeLister
 	secretLister       corelisters.SecretLister
 	nodeLister         corelisters.NodeLister
+	pdbLister          policylisters.PodDisruptionBudgetLister
 	machineClassLister machinelisters.MachineClassLister
 	machineLister      machinelisters.MachineLister
 	// queues
@@ -213,6 +224,7 @@ type controller struct {
 	machineSafetyAPIServerQueue workqueue.RateLimitingInterface
 	// syncs
 	secretSynced       cache.InformerSynced
+	pdbSynced          cache.InformerSynced
 	nodeSynced         cache.InformerSynced
 	machineClassSynced cache.InformerSynced
 	machineSynced      cache.InformerSynced
@@ -232,7 +244,7 @@ func (c *controller) Run(workers int, stopCh <-chan struct{}) {
 	defer c.machineSafetyOrphanVMsQueue.ShutDown()
 	defer c.machineSafetyAPIServerQueue.ShutDown()
 
-	if !cache.WaitForCacheSync(stopCh, c.secretSynced, c.nodeSynced, c.machineClassSynced, c.machineSynced) {
+	if !cache.WaitForCacheSync(stopCh, c.secretSynced, c.pdbSynced, c.nodeSynced, c.machineClassSynced, c.machineSynced) {
 		runtimeutil.HandleError(fmt.Errorf("Timed out waiting for caches to sync"))
 		return
 	}

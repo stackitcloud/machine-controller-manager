@@ -50,6 +50,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1.AzureMachineClass":                        schema_pkg_apis_machine_v1alpha1_AzureMachineClass(ref),
 		"github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1.AzureMachineClassList":                    schema_pkg_apis_machine_v1alpha1_AzureMachineClassList(ref),
 		"github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1.AzureMachineClassSpec":                    schema_pkg_apis_machine_v1alpha1_AzureMachineClassSpec(ref),
+		"github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1.AzureMachineSetConfig":                    schema_pkg_apis_machine_v1alpha1_AzureMachineSetConfig(ref),
 		"github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1.AzureManagedDiskParameters":               schema_pkg_apis_machine_v1alpha1_AzureManagedDiskParameters(ref),
 		"github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1.AzureNetworkInterfaceReference":           schema_pkg_apis_machine_v1alpha1_AzureNetworkInterfaceReference(ref),
 		"github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1.AzureNetworkInterfaceReferenceProperties": schema_pkg_apis_machine_v1alpha1_AzureNetworkInterfaceReferenceProperties(ref),
@@ -683,6 +684,11 @@ func schema_pkg_apis_machine_v1alpha1_AWSMachineClassSpec(ref common.ReferenceCa
 							Ref: ref("k8s.io/api/core/v1.SecretReference"),
 						},
 					},
+					"credentialsSecretRef": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("k8s.io/api/core/v1.SecretReference"),
+						},
+					},
 				},
 			},
 		},
@@ -1024,6 +1030,11 @@ func schema_pkg_apis_machine_v1alpha1_AlicloudMachineClassSpec(ref common.Refere
 							Ref: ref("k8s.io/api/core/v1.SecretReference"),
 						},
 					},
+					"credentialsSecretRef": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("k8s.io/api/core/v1.SecretReference"),
+						},
+					},
 				},
 				Required: []string{"imageID", "instanceType", "region", "vSwitchID", "keyPairName"},
 			},
@@ -1315,11 +1326,42 @@ func schema_pkg_apis_machine_v1alpha1_AzureMachineClassSpec(ref common.Reference
 							Ref: ref("k8s.io/api/core/v1.SecretReference"),
 						},
 					},
+					"credentialsSecretRef": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("k8s.io/api/core/v1.SecretReference"),
+						},
+					},
 				},
 			},
 		},
 		Dependencies: []string{
 			"github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1.AzureSubnetInfo", "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1.AzureVirtualMachineProperties", "k8s.io/api/core/v1.SecretReference"},
+	}
+}
+
+func schema_pkg_apis_machine_v1alpha1_AzureMachineSetConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "AzureMachineSetConfig contains the information about the machine set",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"id": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+				},
+				Required: []string{"id", "kind"},
+			},
+		},
 	}
 }
 
@@ -1694,11 +1736,16 @@ func schema_pkg_apis_machine_v1alpha1_AzureVirtualMachineProperties(ref common.R
 							Format: "int32",
 						},
 					},
+					"machineSet": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1.AzureMachineSetConfig"),
+						},
+					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1.AzureHardwareProfile", "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1.AzureNetworkProfile", "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1.AzureOSProfile", "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1.AzureStorageProfile", "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1.AzureSubResource"},
+			"github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1.AzureHardwareProfile", "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1.AzureMachineSetConfig", "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1.AzureNetworkProfile", "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1.AzureOSProfile", "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1.AzureStorageProfile", "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1.AzureSubResource"},
 	}
 }
 
@@ -2025,6 +2072,11 @@ func schema_pkg_apis_machine_v1alpha1_GCPMachineClassSpec(ref common.ReferenceCa
 							Ref: ref("k8s.io/api/core/v1.SecretReference"),
 						},
 					},
+					"credentialsSecretRef": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("k8s.io/api/core/v1.SecretReference"),
+						},
+					},
 					"serviceAccounts": {
 						SchemaProps: spec.SchemaProps{
 							Type: []string{"array"},
@@ -2332,7 +2384,13 @@ func schema_pkg_apis_machine_v1alpha1_MachineClass(ref common.ReferenceCallback)
 					},
 					"secretRef": {
 						SchemaProps: spec.SchemaProps{
-							Description: "SecretRef stores the necessary secrets such as credetials or userdata.",
+							Description: "SecretRef stores the necessary secrets such as credentials or userdata.",
+							Ref:         ref("k8s.io/api/core/v1.SecretReference"),
+						},
+					},
+					"credentialsSecretRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "CredentialsSecretRef can optionally store the credentials (in this case the SecretRef does not need to store them). This might be useful if multiple machine classes with the same credentials but different user-datas are used.",
 							Ref:         ref("k8s.io/api/core/v1.SecretReference"),
 						},
 					},
@@ -3562,7 +3620,18 @@ func schema_pkg_apis_machine_v1alpha1_OpenStackMachineClassSpec(ref common.Refer
 							},
 						},
 					},
+					"subnetID": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
 					"secretRef": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("k8s.io/api/core/v1.SecretReference"),
+						},
+					},
+					"credentialsSecretRef": {
 						SchemaProps: spec.SchemaProps{
 							Ref: ref("k8s.io/api/core/v1.SecretReference"),
 						},
@@ -3589,7 +3658,15 @@ func schema_pkg_apis_machine_v1alpha1_OpenStackMachineClassSpec(ref common.Refer
 					},
 					"useConfigDrive": {
 						SchemaProps: spec.SchemaProps{
-							Type:   []string{"boolean"},
+							Description: "in GB",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"serverGroupID": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+
 							Format: "",
 						},
 					},
@@ -3806,6 +3883,11 @@ func schema_pkg_apis_machine_v1alpha1_PacketMachineClassSpec(ref common.Referenc
 						},
 					},
 					"secretRef": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("k8s.io/api/core/v1.SecretReference"),
+						},
+					},
+					"credentialsSecretRef": {
 						SchemaProps: spec.SchemaProps{
 							Ref: ref("k8s.io/api/core/v1.SecretReference"),
 						},
