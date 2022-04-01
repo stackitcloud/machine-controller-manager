@@ -3677,6 +3677,12 @@ func schema_pkg_apis_machine_v1alpha1_OpenStackMachineClassSpec(ref common.Refer
 							},
 						},
 					},
+					"networkIDv6": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
 					"subnetID": {
 						SchemaProps: spec.SchemaProps{
 							Type:   []string{"string"},
