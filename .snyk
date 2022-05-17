@@ -1,0 +1,14 @@
+# Snyk (https://snyk.io) policy file, patches or ignores known vulnerabilities.
+version: v1.25.0
+# ignores vulnerabilities until expiry date; change duration by modifying expiry date
+ignore:
+  SNYK-GOLANG-GITHUBCOMEMICKLEIGORESTFUL-2435653:
+    - '*':
+        reason: We do not use CORS
+        expires: 2022-06-12T11:17:00.831Z
+        created: 2022-05-13T11:17:00.832Z
+  SNYK-GOLANG-GITHUBCOMSATORIGOUUID-72488:
+    - '*':
+        reason: vulnerability only in unused alibaba provider
+        created: 2022-05-16T09:49:27.812Z
+patch: {}
