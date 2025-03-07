@@ -509,6 +509,10 @@ func (c *controller) machineCreateErrorHandler(ctx context.Context, machine *v1a
 		switch machineErr.Code() {
 		case codes.Unknown, codes.DeadlineExceeded, codes.Aborted, codes.Unavailable:
 			retryRequired = machineutils.ShortRetry
+		// HACK: machines that are in error state because of ResourceExhaused ("No valid host was found" error) should not be retries within the lifecycle of the machine object.
+		// Our effectiveCreationTimeout is 20m, so the machine will be deleted after the 30m.
+		case codes.ResourceExhausted:
+			retryRequired = machineutils.RetryPeriod(30 * time.Minute)
 		}
 	}
 
